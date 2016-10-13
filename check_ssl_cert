@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+# simple wrapper for curl and nagios check_http to check for working ssl and
+# certificate expire date
+# Author: gricertg
+# License: The MIT License (MIT)
+
+PATH="/usr/bin:/usr/sbin:/bin:/sbin"
+LIBEXEC="/usr/lib/nagios/plugins"
+. $LIBEXEC/utils.sh
+NAGIOS_PLUGINS='/usr/lib/nagios/plugins'
+
+print_help() {
+  echo "simple wrapper for curl and nagios check_http"
+  echo "checks if ssl certificate matches domain and if it expires soon"
+  echo "parameters:"
+  echo "  -H [DOMAINNAME]       domain/vhost to check"
+  echo "  -w [DAYS]             return warning if certificate expires in \$DAYS, defaults to 10"
+  echo "  -h                    print this help"
+  echo "  -V                    disables the validation of the certificate and the domain"
+  echo "  -s                    enable SSL/TLS hostname extension support (SNI)"
+}
+
+curl_exit() {
+  # $1 gives the curl errorcode
+  case ${1} in
+    35) message=" CURLE_SSL_CONNECT_ERROR";;
+    51) message=" CURLE_PEER_FAILED_VERIFICATION";;
+    53) message=" CURLE_SSL_ENGINE_NOTFOUND";;
+    54) message=" CURLE_SSL_ENGINE_SETFAILED";;
+    59) message=" CURLE_SSL_CIPHER";;
+    60) message=" CURLE_SSL_CACERT";;
+  esac
+  echo "CRITICAL - SSL check failed. curl returned ${1}${message}"
+  exit $STATE_CRITICAL
+}
+
+WARNING=10
+VALIDATION=true
+CURL_ERROR_CODES=(35 51 53 54 59 60)
+CURLCOMMAND='curl -s -o /dev/null'
+
+while getopts 'H:w:h:V:s' OPT; do
+  case $OPT in
+    H) HOST=$OPTARG;;
+    w) WARNING=$OPTARG;;
+    h) print_help; exit $STATE_WARNING;;
+    --help) print_help; exit $STATE_WARNING;;
+    V) VALIDATION=false;;
+    s) SERVER_NAME_INDICATION="--sni";;
+    --sni) SERVER_NAME_INDICATION="--sni";;
+  esac
+done
+
+[ -z "$HOST" ] && echo "no host/domainname specified" && print_help && exit $STATE_WARNING
+
+# first check via curl if ssl handshake is working
+if [[ $VALIDATION == true ]]; then
+  $CURLCOMMAND https://$HOST
+  CURLRETURNS=$?
+
+  for code in "${CURL_ERROR_CODES[@]}"; do
+    [ $CURLRETURNS -eq $code ] && curl_exit $CURLRETURNS
+  done
+fi
+
+# check for certificate expiration
+$NAGIOS_PLUGINS/check_http -C $WARNING -H $HOST $SERVER_NAME_INDICATION
+[ $? -ne 0 ] && exit $STATE_WARNING
+
+# if we reach this point, everything is fine
+exit 0
